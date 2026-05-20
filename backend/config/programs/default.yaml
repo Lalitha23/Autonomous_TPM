@@ -1,10 +1,62 @@
-program_id: ""  # populated after program record is created in DB
-program_name: "Default Program"
+program_id: "atlas-001"
+program_name: "Project Atlas"
 domain: "enterprise_software"
+launch_target: "2026-07-15"        # 8 weeks from 2026-05-20
+business_priority: "Q3 revenue commitment"
+release_stage: "beta"
+
+teams:
+  - name: "Platform"
+    lead: "Priya Singh"
+    capacity_points: 40
+    ownership_areas:
+      - auth
+      - API
+      - infrastructure
+
+  - name: "Payments"
+    lead: "Marcus Webb"
+    capacity_points: 32
+    ownership_areas:
+      - payments
+      - billing
+      - transactions
+
+  - name: "Mobile"
+    lead: "Sarah Chen"
+    capacity_points: 28
+    ownership_areas:
+      - iOS
+      - Android
+      - push notifications
+
+critical_path:
+  - id: "m1"
+    name: "API Freeze"
+    target_date: "2026-06-10"      # week 3
+    blocking_milestone_ids: []
+
+  - id: "m2"
+    name: "Integration Complete"
+    target_date: "2026-06-24"      # week 5
+    blocking_milestone_ids:
+      - "m1"
+
+  - id: "m3"
+    name: "Beta Launch"
+    target_date: "2026-07-08"      # week 7
+    blocking_milestone_ids:
+      - "m2"
+
+  - id: "m4"
+    name: "GA Launch"
+    target_date: "2026-07-15"      # week 8
+    blocking_milestone_ids:
+      - "m3"
 
 thresholds:
-  stale_ticket_days: 5
-  overload_points_per_assignee: 20
+  stale_ticket_days: 3
+  overload_points_per_assignee: 18
   scope_creep_story_point_increase: 0.25
   critical_path_severity_multiplier: 1.5
 
@@ -21,18 +73,17 @@ escalation_rules:
     - BLOCKED
     - STALE
 
-teams:
-  - name: "Backend"
-    lead: "backend-lead"
-  - name: "Frontend"
-    lead: "frontend-lead"
-  - name: "Platform"
-    lead: "platform-lead"
+baselines:
+  normal_velocity_points: 32
+  avg_blocker_resolution_days: 1.5
+  historical_spillover_rate: 0.12
+  normal_dependency_latency_days: 2.0
 
-milestones:
-  - id: "m1"
-    name: "MVP Release"
-    target_date: "2025-09-30"
+detection_tools:
+  - detect_stale_tickets
+  - detect_blocked_tickets
+  - detect_scope_creep
+  - detect_overloaded_assignees
 
 simulation_weights:
   ticket_stalled: 0.15
