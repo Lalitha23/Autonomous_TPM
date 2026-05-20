@@ -193,6 +193,7 @@ async def run_cycle(
     Returns a summary dict with keys:
         run_id, cycle_number, started_at, completed_at,
         ticket_count, sprint_summaries, tickets,
+        risk_flags, sprint_health, mitigations, executive_outputs,
         decision_count, error_count
     """
     run_id = str(uuid.uuid4())
@@ -256,6 +257,10 @@ async def run_cycle(
         "ticket_count": len(final_state.get("tickets", [])),
         "sprint_summaries": final_state.get("sprint_summaries", []),
         "tickets": final_state.get("tickets", []),
+        "risk_flags": final_state.get("risk_flags", []),
+        "sprint_health": final_state.get("sprint_health", []),
+        "mitigations": final_state.get("mitigations", []),
+        "executive_outputs": final_state.get("executive_outputs", {}),
         "decision_count": len(final_state.get("agent_decisions", [])),
         "error_count": len(final_state.get("errors", [])),
     }

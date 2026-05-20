@@ -28,6 +28,7 @@ class Program(Base):
     agent_decisions = relationship("AgentDecision", back_populates="program")
     executive_outputs = relationship("ExecutiveOutput", back_populates="program")
     operational_memory = relationship("OperationalMemory", back_populates="program")
+    escalations = relationship("Escalation", back_populates="program")
 
 
 class Sprint(Base):
@@ -144,3 +145,27 @@ class OperationalMemory(Base):
     )
 
     program = relationship("Program", back_populates="operational_memory")
+
+
+class Escalation(Base):
+    __tablename__ = "escalations"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    program_id = Column(UUID(as_uuid=True), ForeignKey("programs.id"), nullable=False)
+    domain = Column(String(100), nullable=False)
+    run_id = Column(String(100), nullable=False)
+    ticket_id = Column(String(100), nullable=False)
+    flag = Column(String(20), nullable=False)        # STALE|BLOCKED|SCOPE_CREEP|OVERLOADED
+    severity = Column(String(10), nullable=False)    # HIGH|CRITICAL
+    action = Column(Text, nullable=False)
+    suggested_owner = Column(String(255))
+    urgency = Column(String(20), nullable=False)     # IMMEDIATE|THIS_SPRINT|NEXT_SPRINT
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_escalations_program_run", "program_id", "run_id"),
+        Index("ix_escalations_program_created", "program_id", "created_at"),
+    )
+
+    program = relationship("Program", back_populates="escalations")
