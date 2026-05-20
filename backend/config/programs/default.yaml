@@ -1,0 +1,42 @@
+program_id: ""  # populated after program record is created in DB
+program_name: "Default Program"
+domain: "enterprise_software"
+
+thresholds:
+  stale_ticket_days: 5
+  overload_points_per_assignee: 20
+  scope_creep_story_point_increase: 0.25
+  critical_path_severity_multiplier: 1.5
+
+sprint_health_rules:
+  watch_min_flags: 1
+  alert_requires_severity: HIGH
+  escalate_requires_severity: CRITICAL
+
+escalation_rules:
+  trigger_severities:
+    - HIGH
+    - CRITICAL
+  trigger_flags:
+    - BLOCKED
+    - STALE
+
+teams:
+  - name: "Backend"
+    lead: "backend-lead"
+  - name: "Frontend"
+    lead: "frontend-lead"
+  - name: "Platform"
+    lead: "platform-lead"
+
+milestones:
+  - id: "m1"
+    name: "MVP Release"
+    target_date: "2025-09-30"
+
+simulation_weights:
+  ticket_stalled: 0.15
+  blocker_added: 0.08
+  scope_expanded: 0.06
+  ticket_progressed: 0.25
+  blocker_resolved: 0.20
