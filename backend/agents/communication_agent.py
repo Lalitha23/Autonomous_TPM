@@ -234,90 +234,104 @@ def _fallback_standup(
     today = datetime.now(timezone.utc).strftime("%B %d, %Y")
 
     escalate_sprints = [sh for sh in sprint_health if sh["health_badge"] == "ESCALATE"]
-    alert_sprints = [sh for sh in sprint_health if sh["health_badge"] == "ALERT"]
-    watch_sprints = [sh for sh in sprint_health if sh["health_badge"] == "WATCH"]
-    healthy_sprints = [sh for sh in sprint_health if sh["health_badge"] == "HEALTHY"]
+    alert_sprints    = [sh for sh in sprint_health if sh["health_badge"] == "ALERT"]
+    watch_sprints    = [sh for sh in sprint_health if sh["health_badge"] == "WATCH"]
 
+    # Sprint health summary with names
     if escalate_sprints:
+        sprint_names = ", ".join(s["name"].split(" — ")[0] for s in escalate_sprints[:2])
         health_summary = (
-            f"{len(escalate_sprints)} sprint(s) are in ESCALATE status — "
-            f"critical-severity risks are threatening delivery commitments"
+            f"{sprint_names} {'are' if len(escalate_sprints) > 1 else 'is'} in ESCALATE — "
+            f"critical-severity risks are actively threatening delivery commitments"
         )
         confidence = "low"
     elif alert_sprints:
+        sprint_names = ", ".join(s["name"].split(" — ")[0] for s in alert_sprints[:2])
         health_summary = (
-            f"{len(alert_sprints)} sprint(s) are in ALERT — "
-            f"high-severity risks need immediate resolution to stay on track"
+            f"{sprint_names} {'are' if len(alert_sprints) > 1 else 'is'} in ALERT — "
+            f"high-severity risks require immediate resolution to stay on track"
         )
         confidence = "moderate"
     elif watch_sprints:
-        health_summary = (
-            f"{len(watch_sprints)} sprint(s) are under WATCH — "
-            f"low-to-medium risks are present but manageable"
-        )
+        sprint_names = ", ".join(s["name"].split(" — ")[0] for s in watch_sprints[:2])
+        health_summary = f"{sprint_names} {'are' if len(watch_sprints) > 1 else 'is'} under WATCH with low-to-medium risks"
         confidence = "good"
     else:
         health_summary = "all sprints are HEALTHY with no active risks detected"
         confidence = "high"
 
     critical_flags = [f for f in risk_flags if f["severity"] == "CRITICAL"]
-    high_flags = [f for f in risk_flags if f["severity"] == "HIGH"]
-    blocked = [f for f in risk_flags if f["flag"] == "BLOCKED"]
-    stale = [f for f in risk_flags if f["flag"] == "STALE"]
+    high_flags     = [f for f in risk_flags if f["severity"] == "HIGH"]
+    blocked        = [f for f in risk_flags if f["flag"] == "BLOCKED"]
+    stale          = [f for f in risk_flags if f["flag"] == "STALE"]
 
-    risk_para_parts = []
-    if critical_flags:
-        risk_para_parts.append(
-            f"{len(critical_flags)} critical-severity risk(s) require immediate escalation"
-        )
-    if high_flags:
-        risk_para_parts.append(f"{len(high_flags)} high-severity issue(s) are in flight")
-    if blocked:
-        risk_para_parts.append(
-            f"{len(blocked)} ticket(s) are actively blocked with unresolved dependencies"
-        )
-    if stale:
-        risk_para_parts.append(
-            f"{len(stale)} ticket(s) have had no progress beyond the stale threshold"
-        )
-    if not risk_para_parts:
-        risk_para_parts.append("no significant risks are active this cycle")
+    # Name the top critical blocked tickets specifically
+    top_blocked_ids = list({f["ticket_id"] for f in blocked if f["severity"] in ("CRITICAL", "HIGH")})[:3]
+    top_stale_ids   = list({f["ticket_id"] for f in stale if f["severity"] in ("CRITICAL", "HIGH")})[:2]
 
+    risk_parts = []
+    if top_blocked_ids:
+        risk_parts.append(
+            f"{', '.join(top_blocked_ids)} {'are' if len(top_blocked_ids) > 1 else 'is'} "
+            f"blocked with unresolved upstream dependencies"
+        )
+    if top_stale_ids:
+        risk_parts.append(
+            f"{', '.join(top_stale_ids)} {'have' if len(top_stale_ids) > 1 else 'has'} "
+            f"had no progress and crossed the stale threshold"
+        )
+    total_blocked = len(set(f["ticket_id"] for f in blocked))
+    total_stale   = len(set(f["ticket_id"] for f in stale))
+    if total_blocked > len(top_blocked_ids):
+        risk_parts.append(f"{total_blocked} ticket(s) total are blocked this cycle")
+    if total_stale > len(top_stale_ids):
+        risk_parts.append(f"{total_stale} ticket(s) total are stale")
+    if not risk_parts:
+        if risk_flags:
+            risk_parts.append(f"{len(risk_flags)} risk flag(s) detected — no critical or high blockers")
+        else:
+            risk_parts.append("no significant risks are active this cycle")
+
+    # Action owners
     immediate = [m for m in mitigations if m["urgency"] == "IMMEDIATE"]
     this_sprint = [m for m in mitigations if m["urgency"] == "THIS_SPRINT"]
+    immediate_owners = sorted({m["suggested_owner"] for m in immediate if m["suggested_owner"]})
 
     action_parts = []
     if immediate:
-        owners = list({m["suggested_owner"] for m in immediate if m["suggested_owner"]})
+        owner_str = ", ".join(immediate_owners[:3]) or "TBD"
         action_parts.append(
-            f"{len(immediate)} item(s) require action today — "
-            f"owners {', '.join(owners[:3]) or 'TBD'} are on point"
+            f"{len(immediate)} item(s) need resolution today — "
+            f"{owner_str} {'are' if len(immediate_owners) > 1 else 'is'} the named owner(s)"
         )
     if this_sprint:
-        action_parts.append(
-            f"{len(this_sprint)} item(s) are scheduled for resolution this sprint"
-        )
+        action_parts.append(f"{len(this_sprint)} item(s) are tracked for this-sprint resolution")
     if not action_parts:
         action_parts.append("no actions are pending beyond routine monitoring")
 
+    has_escalations = any(m.get("requires_escalation") for m in mitigations)
+    milestone_risks = list({
+        ctx_dict.get("critical_path", [{}])[0].get("name", "")
+        for m in mitigations if m.get("requires_escalation")
+    } - {""})
+
     p1 = (
         f"{program_name} standup — {today}. "
-        f"As of this cycle, {health_summary}. "
-        f"The overall delivery confidence is {confidence} based on current sprint trajectory "
-        f"across {len(sprint_health)} active sprint(s)."
+        f"{health_summary}. "
+        f"Delivery confidence is {confidence} across {len(sprint_health)} active sprint(s) — "
+        f"{'immediate executive attention is required.' if confidence == 'low' else 'the team has a path forward if blockers are resolved this week.'}"
     )
 
     p2 = (
-        f"On the risk front: {'; '.join(risk_para_parts)}. "
-        f"A total of {len(risk_flags)} risk flag(s) were detected this cycle across "
-        f"{len({f['ticket_id'] for f in risk_flags})} affected ticket(s). "
-        f"{'These risks are actively threatening sprint completion and milestone commitments.' if critical_flags or high_flags else 'These risks are being monitored and are manageable within the current sprint.'}"
+        f"Key risks this cycle: {'; '.join(risk_parts)}. "
+        f"{len(risk_flags)} total flag(s) across {len({f['ticket_id'] for f in risk_flags})} ticket(s). "
+        f"{'These are actively threatening sprint completion and milestone commitments — blast radius is expanding with each day of inaction.' if (critical_flags or high_flags) else 'These are being monitored and are manageable within the current sprint.'}"
     )
 
     p3 = (
         f"For today: {'; '.join(action_parts)}. "
-        f"{'Escalation memos have been raised for items requiring VP attention.' if any(m['requires_escalation'] for m in mitigations) else 'No escalations are required at this time.'} "
-        f"Next automated cycle will run in approximately 30 seconds to track resolution progress."
+        f"{'Escalation memos have been raised for VP attention' + (f' — {milestone_risks[0]} milestone is in scope' if milestone_risks else '') + '.' if has_escalations else 'No escalations are required at this time.'} "
+        f"Next automated cycle will run in approximately 30 seconds to confirm resolution progress."
     )
 
     return f"{p1}\n\n{p2}\n\n{p3}"
@@ -369,20 +383,50 @@ def _fallback_escalation_memo(
         f"of sprint spillover and downstream milestone slippage."
     )
 
+    # Build actions — use a clean sentence-by-sentence format, no mid-sentence truncation
     actions = []
-    for i, m in enumerate(escalation_mitigations[:5], 1):
-        t = ticket_by_id.get(m["ticket_id"], {})
+    # Deduplicate by ticket_id (a ticket can have multiple flags)
+    seen_tickets: set[str] = set()
+    action_index = 1
+    for m in escalation_mitigations:
+        if action_index > 5:
+            break
+        tid = m["ticket_id"]
+        t = ticket_by_id.get(tid, {})
         owner = m.get("suggested_owner") or t.get("assignee") or "TBD"
-        actions.append(
-            f"{i}. [{m['flag']}] {m['ticket_id']} — {m['action'][:150]} "
-            f"Owner: {owner}."
-        )
+        title = t.get("title", "Unknown ticket")
+        assignee = t.get("assignee", "the current assignee")
+        team = t.get("team", "the owning team")
+
+        if m["flag"] == "BLOCKED":
+            blocker_ids = t.get("blocker_ids") or []
+            blocker_str = ", ".join(blocker_ids) if blocker_ids else "upstream dependency"
+            action_text = (
+                f'{tid} ("{title[:50]}") is BLOCKED by {blocker_str}. '
+                f'{assignee} ({team}) must coordinate unblock. '
+                f'Escalate to {owner} if not cleared by end of day.'
+            )
+        elif m["flag"] == "STALE":
+            stale_days = m["action"].split("for ")[1].split(" day")[0] if "for " in m["action"] else "multiple days"
+            action_text = (
+                f'{tid} ("{title[:50]}") has had no progress for {stale_days} day(s). '
+                f'Schedule immediate sync with {assignee} ({team}) to identify blockers or reassign. '
+                f'Owner: {owner}.'
+            )
+        else:
+            action_text = f"{tid}: {m['action'][:200]}"
+
+        if tid not in seen_tickets or m["severity"] == "CRITICAL":
+            actions.append(f"{action_index}. [{m['flag']} / {m['severity']}] {action_text}")
+            seen_tickets.add(tid)
+            action_index += 1
 
     actions_text = "\n".join(actions)
 
     decision = (
-        f"Decision needed: authorize priority re-assignment or resource injection "
-        f"for the {len(critical)} critical item(s) listed above by end of business today."
+        f"Decision needed: confirm ownership and authorize resource re-assignment "
+        f"for the {len(critical)} CRITICAL item(s) above. "
+        f"Response required by end of business today to avoid milestone slippage."
     )
 
     return (

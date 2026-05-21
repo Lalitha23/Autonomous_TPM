@@ -235,9 +235,31 @@ async def run_dependency_analysis_agent(state: PipelineState) -> dict:
     """
     risk_flags = state.get("risk_flags", [])
     blocked_flags = [f for f in risk_flags if f.get("flag") == "BLOCKED"]
+    run_id = state.get("run_id", "unknown")
+    cycle_number = state.get("cycle_number", 0)
+    program_id_str = state.get("program_id", "")
+    ctx_dict = state.get("program_context", {})
+    domain = ctx_dict.get("domain", "unknown")
 
     if not blocked_flags:
-        # No BLOCKED flags — pass through unchanged
+        # No BLOCKED flags — log a no-op decision and pass through unchanged
+        try:
+            program_uuid = uuid.UUID(program_id_str)
+            async with AsyncSessionLocal() as session:
+                session.add(AgentDecision(
+                    program_id=program_uuid,
+                    domain=domain,
+                    run_id=run_id,
+                    cycle_number=cycle_number,
+                    agent_name="dependency_analysis",
+                    decision="No BLOCKED flags this cycle — dependency analysis skipped.",
+                    reasoning="0 BLOCKED flags in risk_flags; chain analysis not required.",
+                    input_summary={"program_id": program_id_str, "cycle_number": cycle_number, "blocked_flag_count": 0},
+                    output_summary={"enriched_count": 0, "chains": []},
+                ))
+                await session.commit()
+        except Exception:
+            pass  # non-critical — don't fail the pipeline
         return {}
 
     tickets = state.get("tickets", [])

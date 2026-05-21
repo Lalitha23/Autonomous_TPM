@@ -92,20 +92,15 @@ const FLAG_FILTERS = ['All', 'Blocked', 'Stale', 'Overload', 'Scope']
 const TEAM_FILTERS = ['Platform', 'Payments', 'Mobile']
 
 export default function BacklogView({ tickets }) {
+  // Filter buttons are VISUAL ONLY — no filtering logic applied.
+  // Active state tracks which button appears highlighted; all tickets are always shown.
+  // Filtering will be wired to the API in a future version.
   const [activeFlag, setActiveFlag] = useState('All')
   const [activeTeam, setActiveTeam] = useState(null)
 
-  // Filter logic (flag filter maps display name → risk_flag value)
-  const FLAG_MAP = { Blocked: 'BLOCKED', Stale: 'STALE', Overload: 'OVERLOADED', Scope: 'SCOPE_CREEP' }
-  const filtered = tickets.filter(t => {
-    const flagMatch = activeFlag === 'All' || t.risk_flag === FLAG_MAP[activeFlag]
-    const teamMatch = !activeTeam || t.team === activeTeam
-    return flagMatch && teamMatch
-  })
-
-  // Sort: flagged first, then by priority
+  // Sort all tickets: flagged first, then by priority (display order only — no filtering)
   const PRI_ORDER = { P0: 0, P1: 1, P2: 2, P3: 3 }
-  const sorted = [...filtered].sort((a, b) => {
+  const sorted = [...tickets].sort((a, b) => {
     const aF = a.risk_flag ? 0 : 1
     const bF = b.risk_flag ? 0 : 1
     if (aF !== bF) return aF - bF
@@ -141,7 +136,7 @@ export default function BacklogView({ tickets }) {
       </div>
 
       {sorted.length === 0 ? (
-        <div style={S.empty}>No tickets match the current filter.</div>
+        <div style={S.empty}>Waiting for ticket data…</div>
       ) : (
         <table style={S.table}>
           <thead>

@@ -1,8 +1,8 @@
 """
-REST API routes — Stage 7.
+REST API routes — Stage 7 + 8.
 
-All routes are read-only from PostgreSQL. No business logic — agents
-compute everything, the API only serves what's already stored.
+All routes are read-only from PostgreSQL (except simulation endpoints).
+No business logic — agents compute everything, the API only serves what's stored.
 """
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import uuid
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, select, update
 
 from db.models import AgentDecision, ExecutiveOutput, Program, Sprint, Ticket
 from db.session import AsyncSessionLocal
@@ -337,4 +337,179 @@ async def trigger_cycle(program_id: str):
         "program_id": program_id,
         "started_at": datetime.now(timezone.utc).isoformat(),
         "message": "Cycle triggered — check /api/programs/{program_id}/decisions for results",
+    }
+
+
+# ── Crisis injector ───────────────────────────────────────────────────────────
+
+@router.post("/simulation/{program_id}/inject-crisis")
+async def inject_crisis(program_id: str):
+    """
+    POST /api/simulation/{program_id}/inject-crisis
+
+    Injects a realistic crisis scenario:
+    - 3 critical-path IN_PROGRESS tickets → BLOCKED with realistic blocker_ids
+    - 2 of the 3 get stale_since = 4 days ago
+    - Team with most IN_PROGRESS points gets +3 story points on 2 tickets (OVERLOADED)
+    - Triggers one immediate pipeline cycle
+    Returns ids of mutated tickets and the run_id.
+    """
+    import asyncio
+    import json as _json
+    import os
+    import random
+    from datetime import datetime, timedelta, timezone
+    from pathlib import Path
+
+    import redis.asyncio as aioredis
+
+    from agents.runner import run_cycle
+    from core.context_loader import load_context
+
+    pid = _uuid(program_id)
+    now = datetime.now(timezone.utc)
+    stale_date = now - timedelta(days=4)
+
+    async with AsyncSessionLocal() as db:
+        # ── Load all non-DONE tickets ─────────────────────────────────────
+        all_result = await db.execute(
+            select(Ticket).where(Ticket.program_id == pid)
+        )
+        all_tickets = all_result.scalars().all()
+
+    if not all_tickets:
+        raise HTTPException(status_code=404, detail="No tickets found for this program")
+
+    non_done = [t for t in all_tickets if t.status != "DONE"]
+    in_progress = [t for t in non_done if t.status == "IN_PROGRESS"]
+
+    if len(in_progress) < 3:
+        # Reset some DONE tickets to IN_PROGRESS so the demo works even late in simulation
+        done_crit = [t for t in all_tickets if t.status == "DONE" and t.is_on_critical_path][:3]
+        targets = done_crit if len(done_crit) >= 3 else all_tickets[:3]
+        target_ids = [t.id for t in targets]
+    else:
+        # Prefer critical-path IN_PROGRESS tickets
+        crit_ip = [t for t in in_progress if t.is_on_critical_path]
+        if len(crit_ip) >= 3:
+            targets = random.sample(crit_ip, 3)
+        else:
+            targets = crit_ip + random.sample(
+                [t for t in in_progress if not t.is_on_critical_path],
+                min(3 - len(crit_ip), len(in_progress) - len(crit_ip))
+            )
+            targets = targets[:3]
+        target_ids = [t.id for t in targets]
+
+    # ── Find blocker candidates: other in-sprint tickets not being blocked ──
+    blocker_pool = [
+        t for t in non_done
+        if t.id not in target_ids and t.status in ("IN_PROGRESS", "IN_REVIEW", "TODO")
+    ]
+    if len(blocker_pool) < 3:
+        blocker_pool = [t for t in non_done if t.id not in target_ids]
+
+    # Assign one realistic blocker per target ticket
+    blocker_assignments = {}
+    used_blockers = set()
+    for t in targets:
+        available = [b for b in blocker_pool if b.id not in used_blockers]
+        if available:
+            blocker = random.choice(available)
+            blocker_assignments[t.id] = [blocker.id]
+            used_blockers.add(blocker.id)
+        else:
+            blocker_assignments[t.id] = []
+
+    # ── Stale: first 2 target tickets get stale_since ────────────────────
+    stale_targets = [t.id for t in targets[:2]]
+    injected_stale = stale_targets
+
+    # ── Overloaded: find team with most IN_PROGRESS points ───────────────
+    team_points: dict[str, int] = {}
+    team_tickets: dict[str, list] = {}
+    for t in in_progress:
+        team = t.team or "Unknown"
+        team_points[team] = team_points.get(team, 0) + (t.story_points or 0)
+        team_tickets.setdefault(team, []).append(t)
+
+    overload_targets = []
+    injected_overload = []
+    if team_points:
+        busiest_team = max(team_points, key=team_points.get)
+        team_tix = [t for t in team_tickets[busiest_team] if t.id not in target_ids]
+        overload_targets = team_tix[:2]
+        injected_overload = [t.id for t in overload_targets]
+
+    # ── Apply all mutations to PostgreSQL ─────────────────────────────────
+    async with AsyncSessionLocal() as db:
+        for t in targets:
+            values = {
+                "status": "BLOCKED",
+                "blocker_ids": blocker_assignments.get(t.id, []),
+                "is_on_critical_path": True,
+            }
+            if t.id in stale_targets:
+                values["stale_since"] = stale_date
+            await db.execute(
+                update(Ticket)
+                .where(Ticket.id == t.id, Ticket.program_id == pid)
+                .values(**values)
+            )
+
+        for t in overload_targets:
+            await db.execute(
+                update(Ticket)
+                .where(Ticket.id == t.id, Ticket.program_id == pid)
+                .values(story_points=(t.story_points or 3) + 3)
+            )
+
+        await db.commit()
+
+    # ── Publish mutation events to Redis Stream ────────────────────────────
+    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    r = aioredis.from_url(redis_url)
+    try:
+        crisis_events = []
+        for t in targets:
+            crisis_events.append({
+                "type": "CRISIS_BLOCK",
+                "ticket_id": t.id,
+                "blocker_ids": _json.dumps(blocker_assignments.get(t.id, [])),
+                "stale": "true" if t.id in stale_targets else "false",
+                "timestamp": now.isoformat(),
+            })
+        for t in overload_targets:
+            crisis_events.append({
+                "type": "CRISIS_OVERLOAD",
+                "ticket_id": t.id,
+                "points_added": "3",
+                "timestamp": now.isoformat(),
+            })
+        for evt in crisis_events:
+            await r.xadd(
+                f"streams:sim_events:{program_id}",
+                evt,
+                maxlen=500,
+                approximate=True,
+            )
+    finally:
+        await r.aclose()
+
+    # ── Trigger immediate pipeline cycle ──────────────────────────────────
+    DEFAULT_YAML = (
+        Path(__file__).parent.parent.parent / "config" / "programs" / "default.yaml"
+    )
+    ctx = load_context(str(DEFAULT_YAML))
+    cycle_result = await run_cycle(program_id, ctx)
+
+    return {
+        "injected_blocks":   target_ids,
+        "injected_stale":    injected_stale,
+        "injected_overload": injected_overload,
+        "blocker_map":       blocker_assignments,
+        "cycle_triggered":   True,
+        "run_id":            cycle_result["run_id"],
+        "cycle_number":      cycle_result["cycle_number"],
+        "risk_flags_detected": len(cycle_result.get("risk_flags", [])),
     }
