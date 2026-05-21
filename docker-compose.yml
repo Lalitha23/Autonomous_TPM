@@ -52,6 +52,8 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        BACKEND_HOST: backend:8000
     depends_on:
       - backend
     ports:
