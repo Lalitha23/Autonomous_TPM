@@ -7,7 +7,16 @@ Startup sequence (lifespan):
 3. Launch agent loop as a background asyncio task.
 
 Routes:
-  GET /health  — liveness + dependency check.
+  GET  /health                                           — liveness + dependency check
+  GET  /api/programs                                     — list programs
+  GET  /api/programs/{id}                                — single program
+  GET  /api/programs/{id}/sprints                        — sprint health
+  GET  /api/programs/{id}/tickets                        — ticket backlog
+  GET  /api/programs/{id}/decisions                      — agent decision log
+  GET  /api/programs/{id}/outputs                        — latest executive outputs
+  GET  /api/programs/{id}/outputs/{type}                 — specific output type
+  POST /api/simulation/{id}/trigger                      — manual cycle trigger
+  WS   /ws/{id}                                          — live dashboard feed
 """
 from __future__ import annotations
 
@@ -20,18 +29,22 @@ from typing import Optional
 
 import redis.asyncio as aioredis
 from fastapi import FastAPI
-from sqlalchemy import text
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import desc, select, text
 
 from agents.runner import start_agent_loop
+from api.routes import router as api_router
+from api.websocket import ws_router
 from core.context_loader import load_context
+from db.models import AgentDecision
 from db.session import AsyncSessionLocal, engine
 from simulation.seeder import seed_program
 
 logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 DEFAULT_YAML = Path(__file__).parent / "config" / "programs" / "default.yaml"
 
-# Module-level state shared between lifespan and route handlers
 _program_id: Optional[str] = None
 _agent_task: Optional[asyncio.Task] = None
 _redis_client: Optional[aioredis.Redis] = None
@@ -42,7 +55,6 @@ async def lifespan(app: FastAPI):
     """Manage startup and shutdown lifecycle."""
     global _program_id, _agent_task, _redis_client
 
-    # ── Startup ───────────────────────────────────────────────────────────
     logger.info("ATIS startup: loading program context from %s", DEFAULT_YAML)
     ctx = load_context(str(DEFAULT_YAML))
 
@@ -61,9 +73,8 @@ async def lifespan(app: FastAPI):
     )
     logger.info("ATIS startup: agent loop task created.")
 
-    yield  # Application runs here
+    yield
 
-    # ── Shutdown ──────────────────────────────────────────────────────────
     logger.info("ATIS shutdown: cancelling agent loop.")
     if _agent_task and not _agent_task.done():
         _agent_task.cancel()
@@ -85,23 +96,27 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# ── Routes ────────────────────────────────────────────────────────────────────
+# Include routers
+app.include_router(api_router)
+app.include_router(ws_router)
+
+
+# ── Health route ──────────────────────────────────────────────────────────────
 
 @app.get("/health")
 async def health():
     """
     Liveness and dependency check.
-
-    Returns:
-        {
-          "status": "ok",
-          "db": "ok" | "error",
-          "redis": "ok" | "error",
-          "last_cycle": null   # populated in a future stage
-        }
+    Returns last_cycle from the most recent AgentDecision row.
     """
-    # Database check
     db_status = "ok"
     try:
         async with AsyncSessionLocal() as db:
@@ -110,7 +125,6 @@ async def health():
         logger.exception("/health: database check failed")
         db_status = "error"
 
-    # Redis check
     redis_status = "ok"
     try:
         redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
@@ -121,9 +135,27 @@ async def health():
         logger.exception("/health: Redis check failed")
         redis_status = "error"
 
+    last_cycle = None
+    try:
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(AgentDecision)
+                .order_by(desc(AgentDecision.created_at))
+                .limit(1)
+            )
+            latest = result.scalar_one_or_none()
+            if latest:
+                last_cycle = {
+                    "run_id": latest.run_id,
+                    "cycle_number": latest.cycle_number,
+                    "completed_at": latest.created_at.isoformat() if latest.created_at else None,
+                }
+    except Exception:
+        logger.exception("/health: last_cycle lookup failed")
+
     return {
         "status": "ok",
         "db": db_status,
         "redis": redis_status,
-        "last_cycle": None,
+        "last_cycle": last_cycle,
     }

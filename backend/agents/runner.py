@@ -249,6 +249,60 @@ async def run_cycle(
         len(final_state.get("errors", [])),
     )
 
+    # ── 7. Publish cycle_complete to Redis pub/sub (feeds WebSocket) ──────
+    import json as _json
+    _pubsub_client = aioredis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"))
+    try:
+        executive_outputs = final_state.get("executive_outputs", {})
+        decisions = final_state.get("agent_decisions", [])
+
+        # Build lean decisions list (no huge text fields for WS payload)
+        ws_decisions = [
+            {
+                "agent_name": d.get("agent", "unknown"),
+                "decision": d.get("decision", ""),
+                "reasoning": d.get("reasoning", ""),
+                "run_id": run_id,
+                "timestamp": completed_at,
+            }
+            for d in decisions
+        ]
+
+        pubsub_payload = _json.dumps({
+            "type": "cycle_complete",
+            "data": {
+                "run_id": run_id,
+                "cycle_number": cycle_number,
+                "sprints": final_state.get("sprint_health", []),
+                "tickets": final_state.get("tickets", []),
+                "outputs": {
+                    "standup_summary": {
+                        "content": executive_outputs.get("STANDUP_SUMMARY"),
+                        "cycle_number": cycle_number,
+                        "created_at": completed_at,
+                    } if executive_outputs.get("STANDUP_SUMMARY") else None,
+                    "escalation_memo": {
+                        "content": executive_outputs.get("ESCALATION_MEMO"),
+                        "cycle_number": cycle_number,
+                        "created_at": completed_at,
+                    } if executive_outputs.get("ESCALATION_MEMO") else None,
+                    "risk_digest": {
+                        "content": executive_outputs.get("RISK_DIGEST"),
+                        "cycle_number": cycle_number,
+                        "created_at": completed_at,
+                    } if executive_outputs.get("RISK_DIGEST") else None,
+                },
+                "decisions": ws_decisions,
+            },
+        }, default=str)
+
+        await _pubsub_client.publish(f"agent_stream:{program_id}", pubsub_payload)
+        logger.info("Pub/sub cycle_complete published for run_id=%s", run_id[:8])
+    except Exception:
+        logger.exception("Pub/sub publish failed for run_id=%s — non-fatal.", run_id[:8])
+    finally:
+        await _pubsub_client.aclose()
+
     return {
         "run_id": run_id,
         "cycle_number": cycle_number,

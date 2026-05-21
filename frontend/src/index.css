@@ -1,3 +1,30 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Reset extras */
+*, *::before, *::after { box-sizing: border-box; }
+
+/* Base font */
+body {
+  background: #fafaf9;
+  font-family: Georgia, 'Times New Roman', serif;
+  color: #0f172a;
+  min-height: 100vh;
+}
+
+/* Scrollbars */
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: #fafaf9; }
+::-webkit-scrollbar-thumb { background: #d6d3d1; border-radius: 3px; }
+
+/* Escalation dot pulse */
+@keyframes atis-pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+.atis-pulse { animation: atis-pulse 1.8s ease-in-out infinite; }
+
+/* Chevron transition */
+.atis-chevron { transition: transform 0.2s ease; }
+.atis-chevron-open { transform: rotate(180deg); }
+
+/* Progress bar fill transition */
+.atis-bar-fill { transition: width 0.6s ease; }
